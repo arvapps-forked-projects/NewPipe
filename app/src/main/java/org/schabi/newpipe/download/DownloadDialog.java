@@ -7,8 +7,6 @@ import static org.schabi.newpipe.util.Localization.assureCorrectAppLanguage;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.DialogInterface;
-import android.content.DialogInterface.OnDismissListener;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
@@ -16,6 +14,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -112,14 +111,11 @@ public class DownloadDialog extends DialogFragment
     @State
     int selectedSubtitleIndex = 0; // default to the first item
 
-    @Nullable
-    private OnDismissListener onDismissListener = null;
-
     private StoredDirectoryHelper mainStorageAudio = null;
     private StoredDirectoryHelper mainStorageVideo = null;
     private DownloadManager downloadManager = null;
     private ActionMenuItemView okButton = null;
-    private Context context;
+    private Context context = null;
     private boolean askForSavePath;
 
     private AudioTrackAdapter audioTrackAdapter;
@@ -146,7 +142,6 @@ public class DownloadDialog extends DialogFragment
     private final ActivityResultLauncher<Intent> requestDownloadPickVideoFolderLauncher =
             registerForActivityResult(
                     new StartActivityForResult(), this::requestDownloadPickVideoFolderResult);
-
 
     /*//////////////////////////////////////////////////////////////////////////
     // Instance creation
@@ -195,13 +190,6 @@ public class DownloadDialog extends DialogFragment
         this.selectedVideoIndex = ListHelper.getDefaultResolutionIndex(context, videoStreams);
     }
 
-    /**
-     * @param onDismissListener the listener to call in {@link #onDismiss(DialogInterface)}
-     */
-    public void setOnDismissListener(@Nullable final OnDismissListener onDismissListener) {
-        this.onDismissListener = onDismissListener;
-    }
-
 
     /*//////////////////////////////////////////////////////////////////////////
     // Android lifecycle
@@ -221,6 +209,8 @@ public class DownloadDialog extends DialogFragment
             return;
         }
 
+        // context will remain null if dismiss() was called above, allowing to check whether the
+        // dialog is being dismissed in onViewCreated()
         context = getContext();
 
         setStyle(STYLE_NO_TITLE, ThemeHelper.getDialogTheme(context));
@@ -305,6 +295,9 @@ public class DownloadDialog extends DialogFragment
                               @Nullable final Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
         dialogBinding = DownloadDialogBinding.bind(view);
+        if (context == null) {
+            return; // the dialog is being dismissed, see the call to dismiss() in onCreate()
+        }
 
         dialogBinding.fileName.setText(FilenameUtils.createFilename(getContext(),
                 currentInfo.getName()));
@@ -362,14 +355,6 @@ public class DownloadDialog extends DialogFragment
             }
             return false;
         });
-    }
-
-    @Override
-    public void onDismiss(@NonNull final DialogInterface dialog) {
-        super.onDismiss(dialog);
-        if (onDismissListener != null) {
-            onDismissListener.onDismiss(dialog);
-        }
     }
 
     @Override
@@ -564,7 +549,6 @@ public class DownloadDialog extends DialogFragment
             showFailedDialog(R.string.general_error);
         }
     }
-
 
     /*//////////////////////////////////////////////////////////////////////////
     // Listeners
@@ -784,6 +768,7 @@ public class DownloadDialog extends DialogFragment
         final StoredDirectoryHelper mainStorage;
         final MediaFormat format;
         final String selectedMediaType;
+        final long size;
 
         // first, build the filename and get the output folder (if possible)
         // later, run a very very very large file checking logic
@@ -795,6 +780,7 @@ public class DownloadDialog extends DialogFragment
                 selectedMediaType = getString(R.string.last_download_type_audio_key);
                 mainStorage = mainStorageAudio;
                 format = audioStreamsAdapter.getItem(selectedAudioIndex).getFormat();
+                size = getWrappedAudioStreams().getSizeInBytes(selectedAudioIndex);
                 if (format == MediaFormat.WEBMA_OPUS) {
                     mimeTmp = "audio/ogg";
                     filenameTmp += "opus";
@@ -807,6 +793,7 @@ public class DownloadDialog extends DialogFragment
                 selectedMediaType = getString(R.string.last_download_type_video_key);
                 mainStorage = mainStorageVideo;
                 format = videoStreamsAdapter.getItem(selectedVideoIndex).getFormat();
+                size = wrappedVideoStreams.getSizeInBytes(selectedVideoIndex);
                 if (format != null) {
                     mimeTmp = format.mimeType;
                     filenameTmp += format.getSuffix();
@@ -816,6 +803,7 @@ public class DownloadDialog extends DialogFragment
                 selectedMediaType = getString(R.string.last_download_type_subtitle_key);
                 mainStorage = mainStorageVideo; // subtitle & video files go together
                 format = subtitleStreamsAdapter.getItem(selectedSubtitleIndex).getFormat();
+                size = wrappedSubtitleStreams.getSizeInBytes(selectedSubtitleIndex);
                 if (format != null) {
                     mimeTmp = format.mimeType;
                 }
@@ -868,6 +856,21 @@ public class DownloadDialog extends DialogFragment
                     StoredFileHelper.getNewPicker(context, filenameTmp, mimeTmp, initialPath), TAG,
                     context);
 
+            return;
+        }
+
+        // Check for free storage space
+        final long freeSpace = mainStorage.getFreeStorageSpace();
+        if (freeSpace <= size) {
+            Toast.makeText(context, getString(R.
+                    string.error_insufficient_storage), Toast.LENGTH_LONG).show();
+            // move the user to storage setting tab
+            final Intent storageSettingsIntent = new Intent(Settings.
+                    ACTION_INTERNAL_STORAGE_SETTINGS);
+            if (storageSettingsIntent.resolveActivity(context.getPackageManager())
+                    != null) {
+                startActivity(storageSettingsIntent);
+            }
             return;
         }
 
